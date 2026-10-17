@@ -1,6 +1,6 @@
 {
   "name": "vue-router-persistent-layouts",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Inertia-style persistent layouts for Vue Router",
   "keywords": ["vue", "vue-router", "layouts", "persistent-layouts", "inertia"],
   "license": "MIT",
@@ -9,6 +9,7 @@
     "email": "unstoppablecarlolsen@gmail.com"
   },
   "type": "module",
+  "packageManager": "pnpm@10.33.0",
   "sideEffects": false,
   "exports": {
     ".": {
