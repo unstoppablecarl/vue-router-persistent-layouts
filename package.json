@@ -1,10 +1,13 @@
 {
   "name": "vue-router-persistent-layouts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Inertia-style persistent layouts for Vue Router",
   "keywords": ["vue", "vue-router", "layouts", "persistent-layouts", "inertia"],
   "license": "MIT",
-  "author": "Carl Olsen",
+  "author": {
+    "name": "Carl Olsen",
+    "email": "unstoppablecarlolsen@gmail.com"
+  },
   "type": "module",
   "sideEffects": false,
   "exports": {

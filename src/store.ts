@@ -1,11 +1,34 @@
 import type { Component, InjectionKey, MaybeRefOrGetter } from 'vue'
 import type { LayoutDefinition } from './normalize.js'
 import type { LayoutProps, NamedLayoutProps } from './types.js'
-import { getCurrentScope, hasInjectionContext, inject, onScopeDispose, shallowReactive, toValue } from 'vue'
+import {
+  getCurrentInstance,
+  getCurrentScope,
+  hasInjectionContext,
+  inject,
+  isReactive,
+  isRef,
+  onActivated,
+  onDeactivated,
+  onScopeDispose,
+  shallowReactive,
+  toValue,
+} from 'vue'
 
 interface Entry {
   target?: string | Component
   props: MaybeRefOrGetter<LayoutProps>
+  /** Set outside an effect scope, so kept until reset. */
+  persistent?: boolean
+}
+
+/** A plain props object that can be merged without losing reactivity. */
+function isPlainProps (props: MaybeRefOrGetter<LayoutProps>): props is LayoutProps {
+  return typeof props === 'object' && !isRef(props) && !isReactive(props)
+}
+
+function mergeGetter (a: MaybeRefOrGetter<LayoutProps>, b: MaybeRefOrGetter<LayoutProps>) {
+  return () => ({ ...toValue(a), ...toValue(b) })
 }
 
 type PropsOf<C> = C extends abstract new (...args: any) => { $props: infer P } ? P : LayoutProps
@@ -32,19 +55,41 @@ export interface LayoutPropsStore {
 export function createLayoutPropsStore (): LayoutPropsStore {
   const entries = shallowReactive<Entry[]>([])
 
+  function remove (entry: Entry) {
+    const index = entries.indexOf(entry)
+    if (index !== -1) entries.splice(index, 1)
+  }
+
   function set (...args: [MaybeRefOrGetter<LayoutProps>] | [string | Component, MaybeRefOrGetter<LayoutProps>]) {
     const entry: Entry = args.length === 2
       ? { target: args[0], props: args[1] }
       : { props: args[0] }
 
-    entries.push(entry)
-
     if (getCurrentScope()) {
-      onScopeDispose(() => {
-        const index = entries.indexOf(entry)
-        if (index !== -1) entries.splice(index, 1)
-      })
+      entries.push(entry)
+      onScopeDispose(() => remove(entry))
+      if (getCurrentInstance()) {
+        // Under <KeepAlive> a cached component keeps its scope, so only apply
+        // its props while it is active. Re-adding makes them the most recent.
+        onDeactivated(() => remove(entry))
+        onActivated(() => {
+          if (!entries.includes(entry)) entries.push(entry)
+        })
+      }
+      return
     }
+
+    // Unscoped calls (guards, event handlers, watch callbacks) merge into one
+    // entry per target, like Inertia's store, so repeated calls don't pile up.
+    entry.persistent = true
+    const previous = entries.find(e => e.persistent && e.target === entry.target)
+    if (previous) {
+      remove(previous)
+      entry.props = isPlainProps(previous.props) && isPlainProps(entry.props)
+        ? { ...previous.props, ...entry.props }
+        : mergeGetter(previous.props, entry.props)
+    }
+    entries.push(entry)
   }
 
   function get ({ component, name }: LayoutDefinition): LayoutProps {

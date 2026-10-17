@@ -6,11 +6,15 @@ import { isLayoutCallback, isPropsObject, isPropsObjectOrCallback, isRenderFunct
 interface WithLayout {
   layout?: Layout
   inheritAttrs?: boolean
+  name?: string
+  __name?: string
 }
 
 interface Context {
   pageProps: LayoutProps
   store: LayoutPropsStore
+  /** Layouts whose own `layout` was applied, to catch cycles. */
+  extended: Set<unknown>
 }
 
 /**
@@ -65,7 +69,13 @@ function wrap (
 
 /** Applies the layout declared by `vnode`'s component, if any. */
 function extend (vnode: VNode, context: Context): VNode {
-  return wrap(vnode, (vnode.type as WithLayout).layout, context)
+  const type = vnode.type as WithLayout
+  if (type.layout === undefined) return vnode
+  if (context.extended.has(type)) {
+    throw new Error(`Layout cycle: ${type.name ?? type.__name ?? 'a layout'} is its own ancestor`)
+  }
+  context.extended.add(type)
+  return wrap(vnode, type.layout, context)
 }
 
 /** Page props minus vnode internals RouterView adds (ref, hooks). */
@@ -102,7 +112,7 @@ export function renderLayouts ({ page, content = page, fallbacks = [], store }: 
   return wrap(
     toVNode(content),
     (page.type as WithLayout).layout,
-    { pageProps: getPageProps(page), store },
+    { pageProps: getPageProps(page), store, extended: new Set() },
     fallbacks,
   )
 }

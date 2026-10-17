@@ -1,8 +1,8 @@
 import { flushPromises } from '@vue/test-utils'
-import { defineComponent, h, ref, Transition, type VNode } from 'vue'
+import { defineComponent, h, KeepAlive, ref, Transition, type VNode } from 'vue'
 import type { RouteRecordRaw } from 'vue-router'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createLayoutPropsStore, LayoutView, resetLayoutProps, setLayoutProps } from '../src/index.ts'
+import { createLayoutPropsStore, LayoutView, resetLayoutProps, setLayoutProps } from '../src'
 import { makeLayout, makePage, mountApp } from './helpers.ts'
 
 afterEach(() => {
@@ -87,6 +87,123 @@ describe('layout resolution', () => {
   it('passes page props to layouts without leaking router internals', async () => {
     expect(await render(Other, { props: true }, '/9')).toBe('Other(id=9) > page:Page')
   })
+
+  it('renders no layout when a callback returns false or nothing', async () => {
+    expect(await render(() => false)).toBe('page:Page')
+    expect(await render(() => undefined)).toBe('page:Page')
+  })
+
+  it('renders no layout for an empty array', async () => {
+    expect(await render([])).toBe('page:Page')
+  })
+
+  it('passes a props-only object to the route meta layout before the default', async () => {
+    expect(await render({ title: 'P' }, { meta: { layout: Other } })).toBe('Other[P] > page:Page')
+  })
+
+  it('merges props-only objects over the default layout\'s static props', async () => {
+    const app = await mountApp(
+      [{ path: '/', component: makePage('Page', { layout: { title: 'page' } }) }],
+      { layouts: { defaultLayout: [Default, { title: 'static', id: 'static' }] } },
+    )
+    expect(app.structure()).toBe('Default[page](id=static) > page:Page')
+  })
+
+  it('drops a props-only object when there is no layout to receive it', async () => {
+    const app = await mountApp([{ path: '/', component: makePage('Page', { layout: { title: 'P' } }) }])
+    expect(app.structure()).toBe('page:Page')
+  })
+
+  it('lets page false override route meta and the default', async () => {
+    expect(await render(false, { meta: { layout: Other } })).toBe('page:Page')
+  })
+
+  it('lets route meta false override the default', async () => {
+    expect(await render(undefined, { meta: { layout: false } })).toBe('page:Page')
+  })
+
+  it('accepts named layouts in object and tuple form', async () => {
+    expect(await render({ a: { component: Other, props: { title: 'A' } }, b: [Outer, { title: 'B' }] }))
+      .toBe('Other[A] > Outer[B] > page:Page')
+  })
+
+  it('extends from a callback result', async () => {
+    expect(await render(() => [Inner, { title: 'C' }])).toBe('Outer > Inner[C] > page:Page')
+  })
+
+  it('applies only the outermost layout\'s own layout', async () => {
+    expect(await render([Other, Inner])).toBe('Other > Inner > page:Page')
+  })
+
+  it('throws on layout cycles', async () => {
+    const A = makeLayout('A')
+    const B = makeLayout('B', { layout: A })
+    ;(A as { layout?: unknown }).layout = B
+    await expect(render(A)).rejects.toThrow('Layout cycle: A is its own ancestor')
+  })
+
+  it('does not apply unknown props as attributes on layouts', async () => {
+    const app = await mountApp(
+      [{ path: '/', component: makePage('Page', { layout: Other }), props: { foo: 'bar' } }],
+    )
+    expect(app.wrapper.element.parentElement!.querySelector('[data-layout="Other"]')!.hasAttribute('foo')).toBe(false)
+  })
+
+  it('uses the default-layout prop over the plugin option', async () => {
+    const root = defineComponent(() => () => h(LayoutView, { defaultLayout: Other }))
+    const app = await mountApp([{ path: '/', component: makePage('Page') }], { root, layouts: { defaultLayout: Default } })
+    expect(app.structure()).toBe('Other > page:Page')
+  })
+
+  it('disables the default layout with :default-layout="false"', async () => {
+    const root = defineComponent(() => () => h(LayoutView, { defaultLayout: false }))
+    const app = await mountApp([{ path: '/', component: makePage('Page') }], { root, layouts: { defaultLayout: Default } })
+    expect(app.structure()).toBe('page:Page')
+  })
+})
+
+describe('nested routes', () => {
+  const A = makeLayout('A')
+  const B = makeLayout('B')
+  const Default = makeLayout('Default')
+  const Shell = defineComponent({
+    name: 'Shell',
+    setup: () => () => h('div', { 'data-layout': 'Shell' }, [h(LayoutView)]),
+  })
+
+  it('uses the closest component-less parent\'s meta', async () => {
+    const app = await mountApp([{
+      path: '/a',
+      meta: { layout: A },
+      children: [{ path: 'b', meta: { layout: B }, children: [{ path: 'c', component: makePage('C') }] }],
+    }], { path: '/a/b/c' })
+    expect(app.structure()).toBe('B > page:C')
+  })
+
+  it('does not wrap a parent component in its child route\'s layout', async () => {
+    const app = await mountApp([{
+      path: '/s',
+      component: Shell,
+      meta: { layout: A },
+      children: [{ path: 'x', component: makePage('X'), meta: { layout: B } }],
+    }], { path: '/s/x' })
+    expect(app.structure()).toBe('A > Shell > B > page:X')
+  })
+
+  it('applies the default layout only in the outermost view', async () => {
+    const app = await mountApp([{
+      path: '/s',
+      component: Shell,
+      children: [
+        { path: 'x', component: makePage('X') },
+        { path: 'y', component: makePage('Y', { layout: B }) },
+      ],
+    }], { path: '/s/x', layouts: { defaultLayout: Default } })
+    expect(app.structure()).toBe('Default > Shell > page:X')
+    await app.go('/s/y')
+    expect(app.structure()).toBe('Default > Shell > B > page:Y')
+    expect(Default.mounts).toBe(1)
+  })
 })
 
 describe('persistence', () => {
@@ -111,6 +228,42 @@ describe('persistence', () => {
     expect(app.structure()).toBe('Outer > Other > page:C')
     expect(Outer.mounts).toBe(1)
     expect(app.wrapper.element.parentElement!.querySelector('[data-layout="Outer"]')).toBe(outerEl)
+  })
+
+  it('updates static props without remounting', async () => {
+    const Layout = makeLayout('Layout')
+    const app = await mountApp([
+      { path: '/a', component: makePage('A', { layout: [Layout, { title: 'A' }] }) },
+      { path: '/b', component: makePage('B', { layout: { component: Layout, props: { title: 'B' } } }) },
+    ], { path: '/a' })
+    await app.go('/b')
+    expect(app.structure()).toBe('Layout[B] > page:B')
+    expect(Layout.mounts).toBe(1)
+  })
+
+  it('persists a layout whether it comes from the page, route meta or the default', async () => {
+    const Layout = makeLayout('Layout')
+    const app = await mountApp([
+      { path: '/a', component: makePage('A', { layout: Layout }) },
+      { path: '/b', component: makePage('B'), meta: { layout: Layout } },
+      { path: '/c', component: makePage('C') },
+    ], { path: '/a', layouts: { defaultLayout: Layout } })
+    await app.go('/b')
+    await app.go('/c')
+    expect(app.structure()).toBe('Layout > page:C')
+    expect(Layout.mounts).toBe(1)
+  })
+
+  it('remounts a layout after visiting a page without it', async () => {
+    const Layout = makeLayout('Layout')
+    const app = await mountApp([
+      { path: '/a', component: makePage('A', { layout: Layout }) },
+      { path: '/b', component: makePage('B', { layout: false }) },
+    ], { path: '/a' })
+    await app.go('/b')
+    expect(app.structure()).toBe('page:B')
+    await app.go('/a')
+    expect(Layout.mounts).toBe(2)
   })
 })
 
@@ -168,6 +321,71 @@ describe('setLayoutProps', () => {
     resetLayoutProps()
     await flushPromises()
     expect(app.structure()).toBe('Layout > page:Page')
+  })
+
+  it('applies props in order: page < static < shared < targeted', async () => {
+    const Layout = makeLayout('Layout')
+    const page = (setup?: () => void) => makePage('Page', { layout: [Layout, { title: 'static', id: 'static' }], setup })
+
+    let app = await mountApp([{ path: '/', component: page(), props: { title: 'page', id: 'page' } }])
+    expect(app.structure()).toBe('Layout[static](id=static) > page:Page')
+    document.body.innerHTML = ''
+
+    app = await mountApp([{
+      path: '/',
+      component: page(() => {
+        setLayoutProps(Layout, { title: 'targeted' })
+        setLayoutProps({ title: 'shared', id: 'shared' })
+      }),
+    }])
+    expect(app.structure()).toBe('Layout[targeted](id=shared) > page:Page')
+  })
+
+  it('only applies named props to the named layout', async () => {
+    const Outer = makeLayout('Outer')
+    const Inner = makeLayout('Inner')
+    const app = await mountApp([{
+      path: '/',
+      component: makePage('Page', { layout: { outer: Outer, inner: Inner }, setup: () => setLayoutProps('inner', { title: 'x' }) }),
+    }])
+    expect(app.structure()).toBe('Outer > Inner[x] > page:Page')
+  })
+
+  it('applies only the active page\'s props under <KeepAlive>', async () => {
+    const Layout = makeLayout('Layout')
+    const root = defineComponent(() => () => h(LayoutView, null, {
+      default: ({ Component }: { Component: VNode }) => h(KeepAlive, null, [Component]),
+    }))
+    const app = await mountApp([
+      { path: '/a', component: makePage('A', { layout: Layout, setup: () => setLayoutProps({ title: 'a' }) }) },
+      { path: '/b', component: makePage('B', { layout: Layout, setup: () => setLayoutProps({ title: 'b' }) }) },
+      { path: '/c', component: makePage('C', { layout: Layout }) },
+    ], { path: '/a', root })
+
+    await app.go('/b')
+    expect(app.structure()).toBe('Layout[b] > page:B')
+    await app.go('/a')
+    expect(app.structure()).toBe('Layout[a] > page:A')
+    await app.go('/c')
+    expect(app.structure()).toBe('Layout > page:C')
+  })
+
+  it('lets a persistent layout set props for another layout', async () => {
+    const Layout = makeLayout('Layout')
+    const Shell = defineComponent({
+      name: 'Shell',
+      setup (_props, { slots }) {
+        setLayoutProps(Layout, { title: 'from shell' })
+        return () => h('div', { 'data-layout': 'Shell' }, slots.default?.())
+      },
+    })
+    const app = await mountApp([
+      { path: '/a', component: makePage('A', { layout: [Layout, Shell] }) },
+      { path: '/b', component: makePage('B', { layout: [Layout, Shell] }) },
+    ], { path: '/a' })
+    expect(app.structure()).toBe('Layout[from shell] > Shell > page:A')
+    await app.go('/b')
+    expect(app.structure()).toBe('Layout[from shell] > Shell > page:B')
   })
 
   it('isolates apps with their own store', async () => {
