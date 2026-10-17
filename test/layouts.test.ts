@@ -1,6 +1,6 @@
 import { flushPromises } from '@vue/test-utils'
 import { defineComponent, h, KeepAlive, ref, Transition, type VNode } from 'vue'
-import type { RouteRecordRaw } from 'vue-router'
+import { type RouteRecordRaw, useRoute } from 'vue-router'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createLayoutPropsStore, LayoutView, resetLayoutProps, setLayoutProps } from '../src'
 import { makeLayout, makePage, mountApp } from './helpers.ts'
@@ -280,6 +280,71 @@ describe('setLayoutProps', () => {
     expect(app.structure()).toBe('Layout[dynamic] > page:A')
     await app.go('/b')
     expect(app.structure()).toBe('Layout[static] > page:B')
+  })
+
+  it('stops reading a page\'s getters once navigation leaves it', async () => {
+    const Layout = makeLayout('Layout')
+    const posts: Record<string, { title: string }> = { 1: { title: 'Post 1' } }
+    const app = await mountApp([
+      {
+        path: '/posts/:id',
+        component: makePage('Post', {
+          layout: Layout,
+          setup () {
+            const route = useRoute()
+            setLayoutProps(() => ({ title: posts[route.params.id as string]!.title }))
+          },
+        }),
+      },
+      { path: '/b', component: makePage('B', { layout: Layout }) },
+    ], { path: '/posts/1' })
+
+    expect(app.structure()).toBe('Layout[Post 1] > page:Post')
+    await app.go('/b')
+    expect(app.structure()).toBe('Layout > page:B')
+  })
+
+  it('stops reading a page\'s targeted getters for named layouts once navigation leaves it', async () => {
+    const Outer = makeLayout('Outer')
+    const Inner = makeLayout('Inner')
+    const posts: Record<string, { title: string }> = { 1: { title: 'Post 1' } }
+    const layout = { outer: Outer, inner: Inner }
+    const app = await mountApp([
+      {
+        path: '/posts/:id',
+        component: makePage('Post', {
+          layout,
+          setup () {
+            const route = useRoute()
+            setLayoutProps('inner', () => ({ title: posts[route.params.id as string]!.title }))
+            setLayoutProps(Outer, () => ({ id: route.params.id as string }))
+          },
+        }),
+      },
+      { path: '/b', component: makePage('B', { layout }) },
+    ], { path: '/posts/1' })
+
+    expect(app.structure()).toBe('Outer(id=1) > Inner[Post 1] > page:Post')
+    await app.go('/b')
+    expect(app.structure()).toBe('Outer > Inner > page:B')
+  })
+
+  it('keeps a reused page\'s props when only params change', async () => {
+    const Layout = makeLayout('Layout')
+    const app = await mountApp([{
+      path: '/posts/:id',
+      component: makePage('Post', {
+        layout: Layout,
+        setup () {
+          const route = useRoute()
+          setLayoutProps(() => ({ title: `post ${route.params.id}` }))
+        },
+      }),
+    }], { path: '/posts/1' })
+
+    expect(app.structure()).toBe('Layout[post 1] > page:Post')
+    await app.go('/posts/2')
+    expect(app.structure()).toBe('Layout[post 2] > page:Post')
   })
 
   it('applies targeted props over shared ones, regardless of call order', async () => {

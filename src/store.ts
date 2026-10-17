@@ -15,11 +15,40 @@ import {
   toValue,
 } from 'vue'
 
+/** Provided by `<LayoutView>`: the page component it is rendering. */
+export interface PageScope {
+  page?: unknown
+}
+
+export const PageScopeKey: InjectionKey<PageScope> = Symbol('layout-page-scope')
+
 interface Entry {
   target?: string | Component
   props: MaybeRefOrGetter<LayoutProps>
   /** Set outside an effect scope, so kept until reset. */
   persistent?: boolean
+  /** Set inside a page: its view's scope and the page component. */
+  scope?: PageScope
+  page?: unknown
+}
+
+/**
+ * The view scope and page component when called inside a routed page (or
+ * its descendants), not a layout. Used to ignore the page's props once its
+ * view renders another page, before the page is unmounted.
+ */
+function findPage (): Pick<Entry, 'scope' | 'page'> {
+  const scope = inject(PageScopeKey, null)
+  if (!scope) return {}
+  for (let instance = getCurrentInstance(); instance; instance = instance.parent) {
+    if (instance.type === scope.page) return { scope, page: scope.page }
+  }
+  return {}
+}
+
+/** False for a page's props while its view renders another page. */
+function isActive (entry: Entry) {
+  return !entry.scope || entry.scope.page === entry.page
 }
 
 /** A plain props object that can be merged without losing reactivity. */
@@ -66,6 +95,7 @@ export function createLayoutPropsStore (): LayoutPropsStore {
       : { props: args[0] }
 
     if (getCurrentScope()) {
+      if (getCurrentInstance()) Object.assign(entry, findPage())
       entries.push(entry)
       onScopeDispose(() => remove(entry))
       if (getCurrentInstance()) {
@@ -93,8 +123,9 @@ export function createLayoutPropsStore (): LayoutPropsStore {
   }
 
   function get ({ component, name }: LayoutDefinition): LayoutProps {
-    const shared = entries.filter(e => !e.target)
-    const targeted = entries.filter(e => e.target && (e.target === component || e.target === name))
+    const active = entries.filter(isActive)
+    const shared = active.filter(e => !e.target)
+    const targeted = active.filter(e => e.target && (e.target === component || e.target === name))
     return Object.assign({}, ...[...shared, ...targeted].map(e => toValue(e.props)))
   }
 

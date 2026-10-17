@@ -14,7 +14,7 @@ import {
 import { type RouteLocationNormalizedLoaded, RouterView, viewDepthKey } from 'vue-router'
 import { LayoutsOptionsKey } from './options.js'
 import { renderLayouts } from './render.js'
-import { useLayoutPropsStore } from './store.js'
+import { type PageScope, PageScopeKey, useLayoutPropsStore } from './store.js'
 
 const NestedLayoutViewKey: InjectionKey<true> = Symbol('nested-layout-view')
 
@@ -76,9 +76,15 @@ export const LayoutView = defineComponent({
     const depth = inject(viewDepthKey, 0)
     const nested = inject(NestedLayoutViewKey, false)
     provide(NestedLayoutViewKey, true)
+    // Updated before layouts read props, so the props of a page being left
+    // (still mounted until the patch) are ignored. Not reactive: the view
+    // re-renders whenever it changes.
+    const scope: PageScope = {}
+    provide(PageScopeKey, scope)
 
     return () => h(RouterView, { name: props.name, route: props.route }, {
       default: ({ Component, route }: { Component?: VNode, route: RouteLocationNormalizedLoaded }) => {
+        scope.page = Component?.type
         if (!Component) return slots.default?.({ Component: Component!, route })
 
         const content: VNode | VNodeArrayChildren = slots.default?.({ Component, route }) ?? Component
